@@ -12,6 +12,17 @@ readable by standard QR scanners regardless of how wild the color scheme is.
 
 This project is open source — fork it, branch it, send a PR. Contributions welcome.
 
+## Screenshots
+
+| App | Logo Integration example |
+| --- | --- |
+| ![NeoQR app UI](screenshots/app-ui.png) | ![Logo woven into a QR code](screenshots/logo-integration-example.png) |
+
+## Download
+
+Grab the latest **`NeoQR.exe`** from the [Releases page](https://github.com/ksavona/neoqr/releases/latest) —
+no installation, no Python required, just download and run.
+
 ## Run it
 
 ```

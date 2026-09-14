@@ -6,4 +6,5 @@ dist/
 *.spec
 *.png
 !assets/icon.png
+!screenshots/*.png
 *.svg
