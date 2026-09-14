@@ -6,13 +6,11 @@ import io
 import math
 import os
 
-from PIL import Image
-
 from . import matrix as matrix_mod
 from .artistic import (
     SHAPE_AREA_FACTORS,
+    average_color,
     build_artwork_grid,
-    build_cover_image_rect,
     enforce_dark_color,
     module_diameter_ratio,
     plus_points,
@@ -122,15 +120,15 @@ def render_svg(qr_matrix, style: QRStyle) -> str:
         style.logo_mode == "integration" and style.logo_path and os.path.exists(style.logo_path)
     )
 
+    bg_rgb = None
     if artwork_active:
-        cover = build_cover_image_rect(style.logo_path, 900, 900)
-        buf = io.BytesIO()
-        cover.convert("RGB").save(buf, format="PNG")
-        cover_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        parts.append(
-            f'<image x="0" y="0" width="{total}" height="{total}" '
-            f'href="data:image/png;base64,{cover_b64}"/>'
-        )
+        bg_rgb = average_color(style.logo_path)
+        if style.safe_mode:
+            op = white_overlay_opacity(bg_rgb)
+            if op > 0:
+                bg_rgb = tuple(int(v * (1 - op) + 255 * op) for v in bg_rgb)
+        if not style.transparent_bg:
+            parts.append(f'<rect x="0" y="0" width="{total}" height="{total}" fill="{rgb_to_hex(bg_rgb)}"/>')
     elif not style.transparent_bg:
         parts.append(f'<rect x="0" y="0" width="{total}" height="{total}" fill="{bg_hex}"/>')
 
@@ -151,12 +149,13 @@ def render_svg(qr_matrix, style: QRStyle) -> str:
 
             if artwork_active:
                 if not bit:
-                    if style.safe_mode:
-                        opacity = max(white_overlay_opacity(color_grid[r][c]), 0.12)
-                        artwork_group.append(
-                            f'<rect x="{x0}" y="{y0}" width="1" height="1" '
-                            f'fill="#ffffff" fill-opacity="{opacity:.3f}"/>'
-                        )
+                    if not style.transparent_bg:
+                        fill = color_grid[r][c]
+                        if style.safe_mode:
+                            op = white_overlay_opacity(fill)
+                            if op > 0:
+                                fill = tuple(int(v * (1 - op) + 255 * op) for v in fill)
+                        module_group.append(f'<rect x="{x0}" y="{y0}" width="1" height="1" fill="{rgb_to_hex(fill)}"/>')
                     continue
                 lum = lum_grid[r][c]
                 diameter_ratio = module_diameter_ratio(lum)
@@ -287,13 +286,12 @@ def _apply_frame_svg(inner_svg: str, total: float, style: QRStyle) -> str:
                 f'stroke="{style.frame_color}" stroke-width="{stroke_w:.3f}"/>'
             )
     elif artwork_active:
-        # the border is also "ink": sample the real (extended) artwork's
-        # average color and run it through the same darken/lighten/hue/
-        # overlay pipeline — except the banner strip, which stays a plain
+        # the border is also "ink": one solid color, the styled area-average
+        # of the artwork — except the banner strip, which stays a plain
         # solid color so its text stays legible
-        border_cover = build_cover_image_rect(style.logo_path, 64, max(1, int(64 * new_total_h / new_total_w)))
-        avg = border_cover.resize((1, 1), Image.LANCZOS).convert("RGB").getpixel((0, 0))
-        ink = style_ink_color(avg, style)
+        ink = style_ink_color(average_color(style.logo_path), style)
+        if style.safe_mode:
+            ink = enforce_dark_color(ink)
         if style.frame_style == "rounded":
             frame_rect = (
                 f'<rect x="0" y="0" width="{new_total_w:.3f}" height="{new_total_h:.3f}" '

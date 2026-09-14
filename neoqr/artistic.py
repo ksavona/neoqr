@@ -1,19 +1,18 @@
 """'Logo integration' mode — reproduces the artwork inside the QR (like the
-classic KFC/brand artistic QR codes): the artwork covers the whole canvas
-(under the modules, the eyes AND the border), and every "ink" element (on
-data modules, the eye rings/ball, the border) samples the real pixels under
-it, optionally hue/saturation shifted and blended with an overlay tint, then
-pushed darker (if it started light) or lighter (if it started dark already,
-so it never crushes to a black blob) by user-adjustable percentages. "Gap"
-elements (off data modules, the eye's inner ring, the quiet zone) are left
-as the plain real image — no white fill anywhere. Safe Mode measures the
-actual rendered result and nudges it further if needed so it keeps scanning."""
+classic KFC/brand artistic QR codes). Every module — and each eye ring/ball
+and the border — is filled with ONE solid color: the true area-average of
+the real artwork pixels it covers (via box-filter downsampling, so there's
+no per-pixel grain), optionally hue/saturation shifted and blended with an
+overlay tint, then pushed darker (if it started light) or lighter (if it
+started dark already, so it never crushes to black) by user-adjustable
+percentages. Safe Mode checks the actual resulting color and nudges it
+further if needed so it keeps scanning."""
 from __future__ import annotations
 
 import math
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
 
 from .palette import hex_to_rgb, relative_luminance
 
@@ -28,13 +27,14 @@ OVERLAY_MODES = ["none", "multiply", "darken", "lighten", "screen", "overlay", "
 
 
 def build_artwork_grid(logo_path: str, size: int):
-    """Return (luminance_grid, color_grid) sampled at one value per QR module —
-    used only to decide each module's shape size."""
+    """Return (luminance_grid, color_grid): the TRUE area-average color of
+    the artwork under each QR module, computed with box-filter downsampling
+    (a real average of every covered pixel, not a resampled guess)."""
     art = Image.open(logo_path).convert("RGB")
     w, h = art.size
     side = min(w, h)
     left, top = (w - side) // 2, (h - side) // 2
-    art = art.crop((left, top, left + side, top + side)).resize((size, size), Image.LANCZOS)
+    art = art.crop((left, top, left + side, top + side)).resize((size, size), Image.Resampling.BOX)
     pixels = art.load()
 
     lum_grid = [[0.0] * size for _ in range(size)]
@@ -47,35 +47,10 @@ def build_artwork_grid(logo_path: str, size: int):
     return lum_grid, color_grid
 
 
-def build_cover_image(logo_path: str, px: int) -> Image.Image:
-    """The full artwork at 100% opacity, cover-cropped to px x px."""
+def average_color(logo_path: str) -> tuple:
+    """The single area-average color of the whole artwork."""
     art = Image.open(logo_path).convert("RGB")
-    w, h = art.size
-    side = min(w, h)
-    left, top = (w - side) // 2, (h - side) // 2
-    art = art.crop((left, top, left + side, top + side)).resize((px, px), Image.LANCZOS)
-    art = art.filter(ImageFilter.GaussianBlur(radius=max(0.6, px / 900)))
-    return art.convert("RGBA")
-
-
-def build_cover_image_rect(logo_path: str, out_w: int, out_h: int) -> Image.Image:
-    """The full artwork at 100% opacity, cover-cropped to an out_w x out_h
-    rectangle (used for the border, which isn't always square)."""
-    art = Image.open(logo_path).convert("RGB")
-    w, h = art.size
-    target_ratio = out_w / out_h
-    src_ratio = w / h
-    if src_ratio > target_ratio:
-        new_w = int(h * target_ratio)
-        left, top = (w - new_w) // 2, 0
-        art = art.crop((left, top, left + new_w, h))
-    else:
-        new_h = int(w / target_ratio)
-        left, top = 0, (h - new_h) // 2
-        art = art.crop((left, top, w, top + new_h))
-    art = art.resize((out_w, out_h), Image.LANCZOS)
-    art = art.filter(ImageFilter.GaussianBlur(radius=max(0.6, out_w / 900)))
-    return art.convert("RGBA")
+    return art.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
 
 
 def module_diameter_ratio(lum: float) -> float:
@@ -230,12 +205,4 @@ def white_overlay_opacity(rgb, min_lum: float = 0.88) -> float:
     if lum >= min_lum or lum >= 1.0:
         return 0.0
     return min(1.0, (min_lum - lum) / (1.0 - lum))
-
-
-def to_float_array(img: Image.Image) -> np.ndarray:
-    return np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
-
-
-def to_pil(arr: np.ndarray) -> Image.Image:
-    return Image.fromarray(np.clip(arr * 255.0, 0, 255).astype(np.uint8), "RGB")
 

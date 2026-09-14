@@ -5,25 +5,23 @@ from __future__ import annotations
 import math
 import os
 
-import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from . import matrix as matrix_mod
 from .artistic import (
     SHAPE_AREA_FACTORS,
+    average_color,
     build_artwork_grid,
-    build_cover_image,
-    build_cover_image_rect,
+    enforce_dark_color,
     module_diameter_ratio,
     plus_points,
     star_points,
-    style_ink_array,
-    to_float_array,
-    to_pil,
+    style_ink_color,
+    white_overlay_opacity,
 )
 from .geometry import get_neighbors, rounding_for_module
 from .logo import prepare_logo
-from .palette import hex_to_rgb
+from .palette import hex_to_rgb, relative_luminance
 from .style import QRStyle
 
 _FONT_CANDIDATES = [
@@ -86,109 +84,21 @@ def draw_shape_box(draw: "ImageDraw.ImageDraw", box, shape: str, fill):
         draw.rectangle(box, fill=fill)
 
 
-def _shape_mask_draw(draw: "ImageDraw.ImageDraw", shape: str, cx: float, cy: float, r: float):
+def _shape_at(draw: "ImageDraw.ImageDraw", shape: str, cx: float, cy: float, r: float, fill):
     if shape == "square":
-        draw.rectangle((cx - r, cy - r, cx + r, cy + r), fill=255)
+        draw.rectangle((cx - r, cy - r, cx + r, cy + r), fill=fill)
     elif shape == "star":
-        draw.polygon(star_points(cx, cy, r), fill=255)
+        draw.polygon(star_points(cx, cy, r), fill=fill)
     elif shape == "plus":
-        draw.polygon(plus_points(cx, cy, r), fill=255)
+        draw.polygon(plus_points(cx, cy, r), fill=fill)
     else:
-        draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=255)
+        draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=fill)
 
 
-def lighten_box(canvas: Image.Image, box, blend: float):
-    """Nudge real pixels back toward white by `blend` (0..1)."""
-    if blend <= 0:
-        return
-    x0, y0, x1, y1 = (int(v) for v in box)
-    region = canvas.crop((x0, y0, x1, y1))
-    rb, gb, bb, ab = region.split()
-    lighten = lambda band: band.point(lambda p: int(p * (1 - blend) + 255 * blend))  # noqa: E731
-    canvas.paste(Image.merge("RGBA", (lighten(rb), lighten(gb), lighten(bb), ab)), (x0, y0))
-
-
-def _cell_mean(canvas: Image.Image, box) -> float:
-    x0, y0, x1, y1 = (int(v) for v in box)
-    hist = canvas.crop((x0, y0, x1, y1)).convert("L").histogram()
-    total = sum(hist)
-    if not total:
-        return 0.0
-    return (sum(i * h for i, h in enumerate(hist)) / total) / 255.0
-
-
-def enforce_dark(canvas: Image.Image, box, max_lum: float = 0.12):
-    """Safe Mode guarantee: an on-module/ink cell must end up reliably dark on
-    average, whatever the user's sliders produced — scale it down if not."""
-    mean = _cell_mean(canvas, box)
-    if mean <= max_lum or mean <= 0:
-        return
-    factor = max_lum / mean
-    x0, y0, x1, y1 = (int(v) for v in box)
-    region = canvas.crop((x0, y0, x1, y1))
-    rb, gb, bb, ab = region.split()
-    scale = lambda p: int(p * factor)  # noqa: E731
-    canvas.paste(Image.merge("RGBA", (rb.point(scale), gb.point(scale), bb.point(scale), ab)), (x0, y0))
-
-
-def enforce_light(canvas: Image.Image, box, min_lum: float = 0.88):
-    """Safe Mode guarantee: an off-module/gap cell must end up reliably light
-    on average — nudge it toward white further if not."""
-    mean = _cell_mean(canvas, box)
-    if mean >= min_lum or mean >= 1.0:
-        return
-    blend = min(1.0, (min_lum - mean) / (1.0 - mean))
-    lighten_box(canvas, box, blend)
-
-
-def _masked_mean(canvas: Image.Image, mask_img: Image.Image, box, want_ink: bool):
-    x0, y0, x1, y1 = (int(v) for v in box)
-    m = np.asarray(mask_img.crop((x0, y0, x1, y1)))
-    sel = (m > 127) if want_ink else (m <= 127)
-    if not sel.any():
-        return None, None, None
-    region = canvas.crop((x0, y0, x1, y1))
-    arr = np.asarray(region.convert("RGB"), dtype=np.float32) / 255.0
-    return arr, sel, region
-
-
-_LUMA_WEIGHTS = np.array([0.299, 0.587, 0.114], dtype=np.float32)
-
-
-def enforce_dark_masked(canvas: Image.Image, mask_img: Image.Image, box, max_lum: float = 0.12):
-    """Same guarantee as enforce_dark, but only over the masked ("ink")
-    pixels within `box` — used for eye rings/ball, which share a box with
-    their (light) hole."""
-    arr, sel, region = _masked_mean(canvas, mask_img, box, want_ink=True)
-    if arr is None:
-        return
-    mean = float((arr[sel] @ _LUMA_WEIGHTS).mean())
-    if mean <= max_lum or mean <= 0:
-        return
-    out = arr.copy()
-    out[sel] *= max_lum / mean
-    x0, y0 = int(box[0]), int(box[1])
-    result = to_pil(out).convert("RGBA")
-    result.putalpha(region.split()[3])
-    canvas.paste(result, (x0, y0))
-
-
-def enforce_light_masked(canvas: Image.Image, mask_img: Image.Image, box, min_lum: float = 0.88):
-    """Same guarantee as enforce_light, but only over the masked ("gap")
-    pixels within `box` — used for the eye's inner hole ring."""
-    arr, sel, region = _masked_mean(canvas, mask_img, box, want_ink=False)
-    if arr is None:
-        return
-    mean = float((arr[sel] @ _LUMA_WEIGHTS).mean())
-    if mean >= min_lum:
-        return
-    blend = min(1.0, (min_lum - mean) / (1.0 - mean)) if mean < 1.0 else 0.0
-    out = arr.copy()
-    out[sel] = out[sel] * (1 - blend) + blend
-    x0, y0 = int(box[0]), int(box[1])
-    result = to_pil(out).convert("RGBA")
-    result.putalpha(region.split()[3])
-    canvas.paste(result, (x0, y0))
+def _lighten_rgb(rgb, opacity: float):
+    if opacity <= 0:
+        return rgb
+    return tuple(int(v * (1 - opacity) + 255 * opacity) for v in rgb)
 
 
 def render_png(qr_matrix, style: QRStyle) -> Image.Image:
@@ -276,69 +186,58 @@ def _render_normal_body(qr_matrix, eye_mask, style: QRStyle, size, scale, canvas
 
 
 def _render_artwork_body(qr_matrix, eye_mask, style: QRStyle, size, scale, canvas_px, q) -> Image.Image:
-    """Logo Integration mode: the artwork covers the WHOLE canvas (no white
-    anywhere), and one shared ink/gap mask decides which pixels — data
-    modules, eye rings/ball, eye hole — get the darken/lighten/hue/overlay
-    treatment vs. stay as the plain real image."""
-    cover = build_cover_image(style.logo_path, canvas_px)
-    raw_arr = to_float_array(cover)
-    ink_arr = style_ink_array(raw_arr, style)
+    """Logo Integration mode: every module, and each eye ring/ball, is filled
+    with ONE solid color — the area-average of the real artwork pixels it
+    covers, styled and Safe-Mode checked. No per-pixel texture anywhere."""
+    _, color_grid = build_artwork_grid(style.logo_path, size)
 
-    lum_grid, _ = build_artwork_grid(style.logo_path, size)
+    canvas = Image.new("RGBA", (canvas_px, canvas_px), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
 
-    mask_img = Image.new("L", (canvas_px, canvas_px), 0)
-    mdraw = ImageDraw.Draw(mask_img)
+    bg_rgb = average_color(style.logo_path)
+    if style.safe_mode:
+        bg_rgb = _lighten_rgb(bg_rgb, white_overlay_opacity(bg_rgb))
+    if not style.transparent_bg:
+        draw.rectangle((0, 0, canvas_px, canvas_px), fill=(*bg_rgb, 255))
 
     for r in range(size):
         for c in range(size):
-            if eye_mask[r][c] or not qr_matrix[r][c]:
+            if eye_mask[r][c]:
                 continue
+            avg = color_grid[r][c]
             x0, y0 = (q + c) * scale, (q + r) * scale
-            diameter_ratio = module_diameter_ratio(lum_grid[r][c])
-            cx, cy = x0 + scale / 2, y0 + scale / 2
-            shape_r = diameter_ratio * scale / 2 * SHAPE_AREA_FACTORS.get(style.dot_shape, 1.0)
-            shape_r = min(shape_r, scale / 2 * 0.97)  # never bleed into a neighboring module
-            _shape_mask_draw(mdraw, style.dot_shape, cx, cy, shape_r)
+            box = (x0, y0, x0 + scale, y0 + scale)
+
+            if qr_matrix[r][c]:
+                ink = style_ink_color(avg, style)
+                if style.safe_mode:
+                    ink = enforce_dark_color(ink)
+                diameter_ratio = module_diameter_ratio(relative_luminance(avg))
+                cx, cy = x0 + scale / 2, y0 + scale / 2
+                shape_r = diameter_ratio * scale / 2 * SHAPE_AREA_FACTORS.get(style.dot_shape, 1.0)
+                shape_r = min(shape_r, scale / 2 * 0.97)  # never bleed into a neighboring module
+                _shape_at(draw, style.dot_shape, cx, cy, shape_r, (*ink, 255))
+            elif not style.transparent_bg:
+                fill = avg
+                if style.safe_mode:
+                    fill = _lighten_rgb(fill, white_overlay_opacity(fill))
+                draw.rectangle(box, fill=(*fill, 255))
 
     for orow, ocol in matrix_mod.eye_origins(size):
+        sample = color_grid[orow + 3][ocol + 3]
+        ink = style_ink_color(sample, style)
+        if style.safe_mode:
+            ink = enforce_dark_color(ink)
+        hole_fill = (0, 0, 0, 0) if style.transparent_bg else (*bg_rgb, 255)
+
         ox0, oy0 = (q + ocol) * scale, (q + orow) * scale
         outer_box = (ox0, oy0, ox0 + 7 * scale, oy0 + 7 * scale)
         inner_box = (ox0 + scale, oy0 + scale, ox0 + 6 * scale, oy0 + 6 * scale)
         ball_box = (ox0 + 2 * scale, oy0 + 2 * scale, ox0 + 5 * scale, oy0 + 5 * scale)
-        draw_shape_box(mdraw, outer_box, style.eye_frame_shape, 255)
-        draw_shape_box(mdraw, inner_box, style.eye_frame_shape, 0)
-        draw_shape_box(mdraw, ball_box, style.eye_ball_shape, 255)
 
-    mask_arr = (np.asarray(mask_img, dtype=np.float32) / 255.0)[..., None]
-    final_arr = raw_arr * (1.0 - mask_arr) + ink_arr * mask_arr
-    canvas = to_pil(final_arr).convert("RGBA")
-
-    if style.safe_mode:
-        for r in range(size):
-            for c in range(size):
-                if eye_mask[r][c]:
-                    continue
-                x0, y0 = (q + c) * scale, (q + r) * scale
-                box = (x0, y0, x0 + scale, y0 + scale)
-                if qr_matrix[r][c]:
-                    enforce_dark(canvas, box)
-                else:
-                    enforce_light(canvas, box)
-
-        for orow, ocol in matrix_mod.eye_origins(size):
-            ox0, oy0 = (q + ocol) * scale, (q + orow) * scale
-            eye_box = (ox0, oy0, ox0 + 7 * scale, oy0 + 7 * scale)
-            enforce_dark_masked(canvas, mask_img, eye_box, max_lum=0.28)
-            enforce_light_masked(canvas, mask_img, eye_box, min_lum=0.72)
-
-        # a QR reader needs a clean, reliably light quiet zone to even find
-        # the code — keep this guarantee no matter how busy the artwork is
-        q_px = q * scale
-        if q_px > 0:
-            enforce_light(canvas, (0, 0, canvas_px, q_px), min_lum=0.85)
-            enforce_light(canvas, (0, canvas_px - q_px, canvas_px, canvas_px), min_lum=0.85)
-            enforce_light(canvas, (0, 0, q_px, canvas_px), min_lum=0.85)
-            enforce_light(canvas, (canvas_px - q_px, 0, canvas_px, canvas_px), min_lum=0.85)
+        draw_shape_box(draw, outer_box, style.eye_frame_shape, (*ink, 255))
+        draw_shape_box(draw, inner_box, style.eye_frame_shape, hole_fill)
+        draw_shape_box(draw, ball_box, style.eye_ball_shape, (*ink, 255))
 
     return canvas
 
@@ -371,36 +270,19 @@ def _apply_frame(qr_img: Image.Image, style: QRStyle) -> Image.Image:
                 (inset, inset, new_w - 1 - inset, new_h - 1 - inset), outline=frame_color, width=stroke_w
             )
     elif style.logo_mode == "integration" and style.logo_path and os.path.exists(style.logo_path):
-        # the border is also "ink": sample the real (extended) artwork and
-        # run it through the same darken/lighten/hue/overlay pipeline —
-        # except the banner strip, which stays a plain solid color so its
-        # text stays legible
-        if style.frame_style == "rounded":
-            frame_mask = Image.new("L", (new_w, new_h), 0)
-            ImageDraw.Draw(frame_mask).rounded_rectangle(
-                (0, 0, new_w - 1, new_h - 1), radius=thickness * 1.6, fill=255
-            )
-        else:
-            frame_mask = Image.new("L", (new_w, new_h), 255)
-
-        canvas.paste(Image.new("RGBA", (new_w, new_h), frame_color), (0, 0), frame_mask)
-
-        if banner_h > 0:
-            ink_mask = Image.new("L", (new_w, new_h), 0)
-            ink_mask.paste(frame_mask.crop((0, 0, new_w, new_h - banner_h)), (0, 0))
-        else:
-            ink_mask = frame_mask
-
-        border_cover = build_cover_image_rect(style.logo_path, new_w, new_h)
-        border_ink = to_pil(style_ink_array(to_float_array(border_cover), style)).convert("RGBA")
-        canvas.paste(border_ink, (0, 0), ink_mask)
-
+        # the border is also "ink": one solid color, the styled area-average
+        # of the artwork — except the banner strip, which stays a plain
+        # solid color so its text stays legible
+        ink = style_ink_color(average_color(style.logo_path), style)
         if style.safe_mode:
-            enforce_dark(canvas, (0, 0, new_w, thickness))
-            enforce_dark(canvas, (0, thickness, thickness, thickness + h))
-            enforce_dark(canvas, (thickness + w, thickness, thickness * 2 + w, thickness + h))
-            if banner_h == 0:
-                enforce_dark(canvas, (0, thickness + h, new_w, thickness * 2 + h))
+            ink = enforce_dark_color(ink)
+        border_color = (*ink, 255)
+        if style.frame_style == "rounded":
+            draw.rounded_rectangle((0, 0, new_w - 1, new_h - 1), radius=thickness * 1.6, fill=border_color)
+        else:
+            draw.rectangle((0, 0, new_w - 1, new_h - 1), fill=border_color)
+        if banner_h > 0:
+            draw.rectangle((0, new_h - banner_h, new_w, new_h), fill=frame_color)
     elif style.frame_style == "rounded":
         draw.rounded_rectangle((0, 0, new_w - 1, new_h - 1), radius=thickness * 1.6, fill=frame_color)
     else:
