@@ -91,7 +91,7 @@ class NeoQRApp(ctk.CTk):
         super().__init__()
         self.title("NEOQR // Replicant Code Forge")
         self.geometry("1420x900")
-        self.minsize(1180, 760)
+        self.minsize(980, 600)
         self.configure(fg_color=BG_ROOT)
 
         self.style = PRESETS["Blade Runner Neon"].clone()
@@ -115,8 +115,29 @@ class NeoQRApp(ctk.CTk):
             header, text="// REPLICANT CODE FORGE — DESIGN YOUR OWN QR", font=FONT_SMALL, text_color=NEON_MAGENTA
         ).pack(side="left", padx=4)
 
-        body = ctk.CTkFrame(self, fg_color=BG_ROOT)
-        body.pack(fill="both", expand=True)
+        body_outer = ctk.CTkFrame(self, fg_color=BG_ROOT)
+        body_outer.pack(fill="both", expand=True)
+
+        # a horizontal-scroll fallback: on very narrow windows the 3-column
+        # layout can't shrink further, so let it scroll instead of clipping
+        body_canvas = tk.Canvas(body_outer, bg=BG_ROOT, highlightthickness=0, bd=0)
+        h_scroll = ctk.CTkScrollbar(body_outer, orientation="horizontal", command=body_canvas.xview)
+        body_canvas.configure(xscrollcommand=h_scroll.set)
+        body_canvas.pack(side="top", fill="both", expand=True)
+        h_scroll.pack(side="bottom", fill="x")
+
+        body = ctk.CTkFrame(body_canvas, fg_color=BG_ROOT)
+        body_window = body_canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def _sync_scrollregion(_event=None):
+            body_canvas.configure(scrollregion=body_canvas.bbox("all"))
+
+        def _sync_width(event):
+            body_canvas.itemconfig(body_window, width=max(event.width, body.winfo_reqwidth()))
+
+        body.bind("<Configure>", _sync_scrollregion)
+        body_canvas.bind("<Configure>", _sync_width)
+
         body.grid_columnconfigure(0, weight=0)
         body.grid_columnconfigure(1, weight=1)
         body.grid_columnconfigure(2, weight=0)
@@ -125,7 +146,7 @@ class NeoQRApp(ctk.CTk):
         self.left_panel = ctk.CTkScrollableFrame(body, fg_color=BG_ROOT, width=340, label_text="")
         self.left_panel.grid(row=0, column=0, sticky="nswe", padx=(10, 0), pady=10)
 
-        center = ctk.CTkFrame(body, fg_color=BG_ROOT)
+        center = ctk.CTkScrollableFrame(body, fg_color=BG_ROOT, label_text="")
         center.grid(row=0, column=1, sticky="nswe", pady=10)
         self._build_preview(center)
 
