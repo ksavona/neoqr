@@ -132,11 +132,15 @@ class NeoQRApp(ctk.CTk):
         def _sync_scrollregion(_event=None):
             body_canvas.configure(scrollregion=body_canvas.bbox("all"))
 
-        def _sync_width(event):
-            body_canvas.itemconfig(body_window, width=max(event.width, body.winfo_reqwidth()))
+        def _sync_size(event):
+            body_canvas.itemconfig(
+                body_window,
+                width=max(event.width, body.winfo_reqwidth()),
+                height=max(event.height, body.winfo_reqheight()),
+            )
 
         body.bind("<Configure>", _sync_scrollregion)
-        body_canvas.bind("<Configure>", _sync_width)
+        body_canvas.bind("<Configure>", _sync_size)
 
         body.grid_columnconfigure(0, weight=0)
         body.grid_columnconfigure(1, weight=1)
