@@ -208,21 +208,22 @@ def render_svg(qr_matrix, style: QRStyle) -> str:
                 ink = enforce_dark_color(ink)
             frame_color = style.eye_frame_color or rgb_to_hex(ink)
             ball_color = style.eye_ball_color or rgb_to_hex(ink)
-            hole_opacity = max(white_overlay_opacity(sample), 0.12) if style.safe_mode else 0.0
-            hole_color = "#ffffff" if hole_opacity > 0 else "none"
+            if style.transparent_bg:
+                hole_color = "none"
+            else:
+                # a fully opaque, properly lightened color — matches render_png.py.
+                # (a translucent white overlay here would stay dark on a dark image
+                # and merge the ring into the frame, breaking real-world scanners)
+                hole_color = rgb_to_hex(bg_rgb)
         else:
             frame_color = style.eye_frame_color or rgb_to_hex(gradient_fn(cxf, cyf))
             ball_color = style.eye_ball_color or rgb_to_hex(gradient_fn(cxf, cyf))
             hole_color = bg_hex if not style.transparent_bg else "none"
-            hole_opacity = 1.0
 
         ox0, oy0 = q + ocol, q + orow
         parts.append(_shape_el(style.eye_frame_shape, ox0, oy0, ox0 + 7, oy0 + 7, frame_color))
         if hole_color != "none":
-            hole_el = _shape_el(style.eye_frame_shape, ox0 + 1, oy0 + 1, ox0 + 6, oy0 + 6, hole_color)
-            if artwork_active and hole_opacity < 1.0:
-                hole_el = hole_el[:-2] + f' fill-opacity="{hole_opacity:.3f}"/>'
-            parts.append(hole_el)
+            parts.append(_shape_el(style.eye_frame_shape, ox0 + 1, oy0 + 1, ox0 + 6, oy0 + 6, hole_color))
         parts.append(_shape_el(style.eye_ball_shape, ox0 + 2, oy0 + 2, ox0 + 5, oy0 + 5, ball_color))
 
     # --- logo ---
