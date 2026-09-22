@@ -54,6 +54,31 @@ def _shape_el(shape, x0, y0, x1, y1, fill):
     return f'<rect x="{x0:.3f}" y="{y0:.3f}" width="{w:.3f}" height="{w:.3f}" fill="{fill}"/>'
 
 
+def _shape_path_d(shape, x0, y0, x1, y1):
+    """Path data for a shape's boundary, used to build evenodd donut cutouts."""
+    w = x1 - x0
+    if shape == "circle":
+        cx, cy, r = (x0 + x1) / 2, (y0 + y1) / 2, w / 2
+        return (
+            f"M{cx + r:.3f},{cy:.3f} A{r:.3f},{r:.3f} 0 1 0 {cx - r:.3f},{cy:.3f} "
+            f"A{r:.3f},{r:.3f} 0 1 0 {cx + r:.3f},{cy:.3f} Z"
+        )
+    if shape == "rounded":
+        return _rounded_rect_path(x0, y0, x1, y1, True, True, True, True, w * 0.28)
+    if shape == "leaf":
+        return _rounded_rect_path(x0, y0, x1, y1, True, False, True, False, w * 0.5)
+    return f"M{x0:.3f},{y0:.3f} L{x1:.3f},{y0:.3f} L{x1:.3f},{y1:.3f} L{x0:.3f},{y1:.3f} Z"
+
+
+def _donut_el(shape, ox0, oy0, ix0, iy0, ix1, iy1, ow, oh_size, fill):
+    """A ring shape with a genuinely transparent (not just same-color) hole —
+    needed because skipping the hole square would leave the outer frame as
+    one solid opaque block instead of a real ring on a transparent background."""
+    outer = _shape_path_d(shape, ox0, oy0, ox0 + ow, oy0 + oh_size)
+    inner = _shape_path_d(shape, ix0, iy0, ix1, iy1)
+    return f'<path d="{outer} {inner}" fill-rule="evenodd" fill="{fill}"/>'
+
+
 def _dot_shape_el(shape, cx, cy, r, fill):
     """A flat-filled ink shape — the fill color already reflects the sampled
     artwork pixel run through hue/saturation/overlay/darken-lighten."""
@@ -221,8 +246,16 @@ def render_svg(qr_matrix, style: QRStyle) -> str:
             hole_color = bg_hex if not style.transparent_bg else "none"
 
         ox0, oy0 = q + ocol, q + orow
-        parts.append(_shape_el(style.eye_frame_shape, ox0, oy0, ox0 + 7, oy0 + 7, frame_color))
-        if hole_color != "none":
+        if hole_color == "none":
+            # transparent bg: a plain frame square would stay solid since
+            # nothing punches a hole in it, so cut a real transparent gap
+            parts.append(
+                _donut_el(
+                    style.eye_frame_shape, ox0, oy0, ox0 + 1, oy0 + 1, ox0 + 6, oy0 + 6, 7, 7, frame_color
+                )
+            )
+        else:
+            parts.append(_shape_el(style.eye_frame_shape, ox0, oy0, ox0 + 7, oy0 + 7, frame_color))
             parts.append(_shape_el(style.eye_frame_shape, ox0 + 1, oy0 + 1, ox0 + 6, oy0 + 6, hole_color))
         parts.append(_shape_el(style.eye_ball_shape, ox0 + 2, oy0 + 2, ox0 + 5, oy0 + 5, ball_color))
 
